@@ -4,7 +4,7 @@ import re
 import os
 from pathlib import Path
 
-# "git -C /Users/etoor/... blame /Users/etoor/..."
+# "git -C /Users/etoor/dir blame /Users/etoor/specificfile.ext"
 
 def get_git_blame_for_file(directory, filepath, extensions, weeks):
     has_ext = False 
