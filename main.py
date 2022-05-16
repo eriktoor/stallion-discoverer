@@ -1,76 +1,84 @@
-import subprocess
-import tempfile
-import re 
-import os
-from pathlib import Path
+"""
+To update the script to run it on a local repo change 
+1. the extensions on line 55
+2. the # weeks on line 56
+3. the dirpath on line 59
+Git blame increases in time with > commits in a repo: https://bugs.chromium.org/p/git/issues/detail?id=18
+"""
 
-# "git -C /Users/etoor/dir blame /Users/etoor/specificfile.ext"
+import time, os, pathlib, re
 
-def get_git_blame_for_file(directory, filepath, extensions, weeks):
-    has_ext = False 
-    for ext in extensions: 
-        if Path(filepath).suffix == ext: has_ext = True 
-    if not has_ext: return []
+num_files = 0 
 
+def get_contributors_for_file(directory, filepath, extensions, weeks):
+    # Step 1: if the file doesn't have the correct extension, return
+    if pathlib.Path(filepath).suffix not in extensions: return []
+
+    global num_files 
+    num_files += 1 
+
+    # Step 2: If there is a weeks argument, add the since arg to the git command
     since = "--since={weeks}.weeks -- ".format(weeks=weeks)
-    if weeks == 0:
-        since = ""
-    
+    if weeks == 0: since = ""
 
-    command = "git -C {directory} blame {since}{filepath}".format(directory = directory, filepath = filepath, since=since)
-    commands = command.split(" ")
-    with tempfile.TemporaryFile() as tempf:
-        proc = subprocess.Popen(commands, stdout=tempf)
-        proc.wait()
-        tempf.seek(0)
-        contents = tempf.read().decode("utf-8")
-        all_lines = contents.split("\n")
+    # Step 3: Do the git blame command and get the output
+    command = "git -C {directory} blame {since}{filepath}".format(directory=directory, filepath=filepath, since=since)
+    # "git -C /Users/etoor/dir blame /Users/etoor/specificfile.ext"
+    all_lines  = os.popen(command).readlines()
 
+    # Step 4: Get the output from all lines
     ret = []
-    for line in all_lines: 
-        if line and line[0] == "^": # any line before the time will start with ^
-            # https://stackoverflow.com/questions/42539892/git-blame-see-changes-after-a-certain-date
-            continue
+    for line in all_lines:
+        # https://stackoverflow.com/questions/42539892/git-blame-see-changes-after-a-certain-date
+        if line and line[0] == "^": continue # any line before the since arg will start with ^ 
         if "(" in line and ")" in line: 
             blame = line.split("(")[1].split(")")[0]
-            user = re.split('[\d]{4}-[\d]{2}-[\d]{2}', blame)[0].strip()
+            user = re.split('[\d]{4}-[\d]{2}', blame)[0].strip()
             ret.append(user)
-    
+
     return ret
 
+def get_all_files(dirpath): 
+    all_files = []
 
-
-def get_all_files(dirpath):
-    ret = []
     for dirpath, dnames, fnames in os.walk(dirpath):
         for f in fnames: 
             full_file = os.path.join(dirpath, f)
-            ret.append((dirpath, full_file))
-            # git -C dirpath blame full_file
+            all_files.append((dirpath, full_file))
 
-    return ret
+    return all_files
+ 
 
+def main():
+    # Define hmap, extensions we want to get, weeks we want to read, dirpath
+    contributors_hmap = {}
+    extensions = [".go", ".py"]
+    weeks = 50  
+    start_time = time.time()
 
+    dirpath = "/Users/etoor/Desktop/open-source/go-ethereum"
 
-
-def main(): 
-    hmap = {}
-
-    extensions = [".go", ".js", ".py"]
-    weeks = 50 
-    dirpath = "/Users/etoor/Desktop/open-source"
+    # Step 1: Walk the file tree (get all files)
     all_dirs_and_files = get_all_files(dirpath)
 
-    for dirpath, filepath in all_dirs_and_files: 
-        list_of_contributors = get_git_blame_for_file(dirpath, filepath, extensions, weeks)
-        for name in list_of_contributors: 
-            if name in hmap: 
-                hmap[name] += 1 
+    # Step 2: For each file, run the git blame and get the authors of each line 
+    # Step 3: Aggregate the results of the git blame into a hashmap 
+    for dirpath, filepath in all_dirs_and_files:
+        list_of_contributors = get_contributors_for_file(dirpath, filepath, extensions, weeks)
+        for name in list_of_contributors:
+            if name in contributors_hmap: 
+                contributors_hmap[name] += 1 
             else: 
-                hmap[name] = 1 
+                contributors_hmap[name] = 1 
 
-    print(hmap)
 
+    print(contributors_hmap)
+    print("Results obtained in:", time.time() - start_time, "seconds")
+    print(num_files, "files blamed")
+    total = 0 
+    for name in contributors_hmap: 
+        total += contributors_hmap[name]
+    print(total, "total lines")
 
 if __name__ == "__main__":
     main()
