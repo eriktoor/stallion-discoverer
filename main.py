@@ -1,4 +1,5 @@
 """
+Video: https://www.youtube.com/watch?v=nXSUSkm0UC4
 To update the script to run it on a local repo change 
 1. the extensions on line 55
 2. the # weeks on line 56
