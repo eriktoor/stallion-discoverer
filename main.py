@@ -10,53 +10,92 @@ Git blame increases in time with > commits in a repo: https://bugs.chromium.org/
 import time
 import os
 import re
-from typing import List, Generator, Set, Optional, Tuple
+from typing import List, Generator, Set, Optional, Tuple, Iterable
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, Counter
+from itertools import chain
+
 import logging
 from pprint import pprint
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv('LOGLEVEL', 'DEBUG'))
 
-
 # Compile the re used to grab the committer once for later use.
 git_line_porcelain_action_re = re.compile('^(?P<action>committer) (?P<value>.*)$')
+git_blame_command_template = "git -C {directory} blame --line-porcelain {since} -- {filepath}"
 
-def get_contributors_for_file(filepath: Path,
-                              weeks: Optional[int] = None) -> Set:
+
+def get_contributors_for_file(top_level_path: Path,
+                              filepath: Path,
+                              weeks: Optional[int] = None) -> List[str]:
     """
     given a file, use `git blame` to identify the committer for each line in
     the file.  Accumulate the distinct committers and return them
+    :param top_level_path: must provide the base git repo directory path
     :param filepath: The file to investigate with `git blame`
     :param weeks: Parameter to `git blame` see `--since` option
-    :return: return a set of distinct committers.
+    :return: return a list committers.
     """
     # Step 2: If there is a weeks argument, add the since arg to the git command
     since = f"--since={weeks}.weeks" if weeks else ""
-    directory = filepath.parent
     # Step 3: Do the git blame command and get the output
     # use '--line-porcelain' to reduce the parsing burden
-    command = f"git -C {directory} blame --line-porcelain {since} -- {filepath}"
-    # "git -C /Users/etoor/dir blame /Users/etoor/specificfile.ext"
-
+    command = git_blame_command_template.format(directory=top_level_path, since=since, filepath=filepath)
     # Step 4: Get the output from all lines
     try:
-        ret = set()
-        line_count = 0
+        ret = list()
         for line in os.popen(command).readlines():
             line = line.strip()
             if porcelain_info := git_line_porcelain_action_re.search(line):
                 if porcelain_info.group('action') == 'committer':
-                    ret.add(porcelain_info.group('value'))
+                    ret.append(porcelain_info.group('value'))
         return ret
     except UnicodeDecodeError as uedc:
-        logger.warning("could not process file: {f} error: {uedc}")
-        return set()
+        logger.warning(f"could not process file {filepath}. error: {uedc}")
+        return []
 
-def all_files_by_extension(dirpath: Path,
+
+def all_files_by_extension_git(top_level_path: Path, extensions: Optional[Set[str]] = None) -> Generator[
+    Path, None, None]:
+    """
+    dirpath must be the root directory for the git repo.  Should be same as `git -C {directory} rev-parse
+    --show-toplevel`
+    ```
+    brucelowther@bruces-mbp NetHack % git -C . rev-parse --show-toplevel
+    /Users/brucelowther/src/NetHack
+    ```
+    Use `git ls-tree -r --full-name --name-only HEAD`
+    to fetch all the filenames that are managed in this git repo.
+    Rather than searching
+    """
+    git_ls_tree_command_template = 'git -C {directory} ls-tree -r --full-name --name-only HEAD'
+
+    if not top_level_path.exists():
+        raise ValueError(f"dirpath must exist {top_level_path}")
+    toplevel_dir = get_git_toplevel(top_level_path)
+    if top_level_path != toplevel_dir:
+        raise ValueError(f"dirpath must be root of git repository. git says {toplevel_dir} is root")
+
+    command = git_ls_tree_command_template.format(directory=top_level_path.absolute())
+    for line in os.popen(command).readlines():
+        filename = top_level_path.joinpath(line.strip()).absolute()
+        if extensions is None:
+            yield filename
+        else:
+            if filename.suffix in extensions:
+                yield filename
+
+
+def get_git_toplevel(dirpath: Path) -> Path:
+    git_toplevel_command_template = 'git -C {directory} rev-parse --show-toplevel'
+    toplevel_dir = os.popen(git_toplevel_command_template.format(directory=dirpath)).readline().strip()
+    return Path(toplevel_dir)
+
+
+def all_files_by_extension(top_level_path: Path,
                            extensions: Set[str],
-                           exclude_dirs: Optional[Set[str]]=None) -> Generator[Path,None,None]:
+                           exclude_dirs: Optional[Set[str]] = None) -> Generator[Path, None, None]:
     """
     :param dirpath: The base directory for a git repository `git rev-parse --show-toplevel`
     :param extensions: the files that have these extensions will be included.
@@ -64,10 +103,10 @@ def all_files_by_extension(dirpath: Path,
     supplied then do not exclude any
     :return: Generator that wil provide all files in the directory and any sub-directory meeting the critera.
     """
-    if not dirpath.exists():
-        raise ValueError(f"dirpath must exist {dirpath}")
+    if not top_level_path.exists():
+        raise ValueError(f"dirpath must exist {top_level_path}")
     exclude_dirs = exclude_dirs if exclude_dirs else []
-    for base, dirnames, files in os.walk(dirpath):
+    for base, dirnames, files in os.walk(top_level_path):
         # don't go down directories that are excluded at any level.
         # have to use del here on dirnames (see docs for os.walk)
         for exclude_dir in exclude_dirs:
@@ -78,12 +117,13 @@ def all_files_by_extension(dirpath: Path,
                 # excluded_dir doesn't exist in dirnames.  Throws Value error and it is ignored.
                 pass
 
-        for file in [dirpath.joinpath(base, f).absolute() for f in files if Path(f).suffix in extensions]:
+        for file in [Path(base).joinpath(f) for f in files if Path(f).suffix in extensions]:
             yield file
+
 
 def main():
     # Define hmap, extensions we want to get, weeks we want to read, dirpath
-    contributors_hmap = defaultdict(int)
+    contributors_hmap = Counter()
     extensions = {".c", ".py", ".txt"}
     exclude_directories = {'.git'}
     weeks = 52
@@ -95,16 +135,15 @@ def main():
     # Step 1: Walk the file tree (get all files)
     # Step 2: For each file, run the git blame and get the authors of each line 
     # Step 3: Aggregate the results of the git blame into a hashmap
-    for file_index, f in enumerate(all_files_by_extension(dirpath, extensions, exclude_dirs=exclude_directories)):
-        print(f"{file_index}:{f}")
-        for name in get_contributors_for_file(f, weeks):
-            contributors_hmap[name] += 1
+    result_set_list = [get_contributors_for_file(top_level_path=dirpath, filepath=f, weeks=weeks)
+                       for f in
+                       all_files_by_extension(dirpath, extensions)]
+    contributors_hmap = Counter(chain(*result_set_list))
     print(f"Results obtained in:{time.time() - start_time} seconds")
     contributors_total = sum(contributors_hmap.values())
     print(f"Contributor total lines: {contributors_total}")
     pprint(contributors_hmap, sort_dicts=True)
 
+
 if __name__ == "__main__":
     main()
-
-
