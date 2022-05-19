@@ -6,6 +6,7 @@ To update the script to run it on a local repo change
 3. the dirpath on line 59
 Git blame increases in time with > commits in a repo: https://bugs.chromium.org/p/git/issues/detail?id=18
 """
+import asyncio
 
 import time
 import os
@@ -26,7 +27,7 @@ git_line_porcelain_action_re = re.compile('^(?P<action>committer) (?P<value>.*)$
 git_blame_command_template = "git -C {directory} blame --line-porcelain {since} -- {filepath}"
 
 
-def get_contributors_for_file(top_level_path: Path,
+async def get_contributors_for_file(top_level_path: Path,
                               filepath: Path,
                               weeks: Optional[int] = None) -> List[str]:
     """
@@ -56,7 +57,7 @@ def get_contributors_for_file(top_level_path: Path,
         return []
 
 
-def all_files_by_extension_git(top_level_path: Path, extensions: Optional[Set[str]] = None) -> Generator[
+async def all_files_by_extension_git(top_level_path: Path, extensions: Optional[Set[str]] = None) -> Generator[
     Path, None, None]:
     """
     dirpath must be the root directory for the git repo.  Should be same as `git -C {directory} rev-parse
@@ -93,7 +94,7 @@ def get_git_toplevel(dirpath: Path) -> Path:
     return Path(toplevel_dir)
 
 
-def all_files_by_extension(top_level_path: Path,
+async def all_files_by_extension(top_level_path: Path,
                            extensions: Set[str],
                            exclude_dirs: Optional[Set[str]] = None) -> Generator[Path, None, None]:
     """
@@ -121,7 +122,7 @@ def all_files_by_extension(top_level_path: Path,
             yield file
 
 
-def main():
+async def main():
     # Define hmap, extensions we want to get, weeks we want to read, dirpath
     contributors_hmap = Counter()
     extensions = {".c", ".py", ".txt"}
@@ -135,10 +136,14 @@ def main():
     # Step 1: Walk the file tree (get all files)
     # Step 2: For each file, run the git blame and get the authors of each line 
     # Step 3: Aggregate the results of the git blame into a hashmap
-    result_set_list = [get_contributors_for_file(top_level_path=dirpath, filepath=f, weeks=weeks)
-                       for f in
+    result_set_corlist = [get_contributors_for_file(top_level_path=dirpath, filepath=f, weeks=weeks)
+                       async for f in
                        all_files_by_extension(dirpath, extensions)]
-    contributors_hmap = Counter(chain(*result_set_list))
+    file_info_result_list = await asyncio.gather(*result_set_corlist, return_exceptions=False)
+    for l in file_info_result_list:
+        contributors_hmap = contributors_hmap + Counter(l)
+
+    # contributors_hmap = Counter(chain(*file_info_result_list))
     print(f"Results obtained in:{time.time() - start_time} seconds")
     contributors_total = sum(contributors_hmap.values())
     print(f"Contributor total lines: {contributors_total}")
@@ -146,4 +151,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main(), debug=True)
+
+
