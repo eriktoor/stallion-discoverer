@@ -15,21 +15,54 @@ from typing import List, Generator, Set, Optional, Tuple, Iterable
 from pathlib import Path
 from collections import defaultdict, Counter
 from itertools import chain
+import asyncio
+import io
+import locale
+import subprocess
 
 import logging
 from pprint import pprint
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=os.getenv('LOGLEVEL', 'DEBUG'))
+logging.basicConfig(level=os.getenv('LOGLEVEL', 'WARNING'))
 
 # Compile the re used to grab the committer once for later use.
 git_line_porcelain_action_re = re.compile('^(?P<action>committer) (?P<value>.*)$')
 git_blame_command_template = "git -C {directory} blame --line-porcelain {since} -- {filepath}"
 
 
+# not my code
+# from: https://github.com/BobBuildTool/bob
+async def asyncio_popen(args, universal_newlines=False, check=False, shell=False, **kwargs):
+    """Provide the subprocess.run() function as asyncio corouting.
+
+    This takes care of the missing 'universal_newlines' and 'check' options.
+    Everything else is passed through. Will also raise the same exceptions as
+    subprocess.run() to act as a drop-in replacement.
+    """
+
+    if shell:
+        proc = await asyncio.create_subprocess_shell(args, **kwargs)
+    else:
+        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+    stdout, stderr = await proc.communicate()
+
+    if universal_newlines and (stdout is not None):
+        stdout = io.TextIOWrapper(io.BytesIO(stdout)).read()
+    if universal_newlines and (stderr is not None):
+        stderr = io.TextIOWrapper(io.BytesIO(stderr)).read()
+
+    if check and (proc.returncode != 0):
+        raise subprocess.CalledProcessError(proc.returncode, args,
+                                            stdout, stderr)
+
+    return subprocess.CompletedProcess(args, proc.returncode, stdout,
+                                       stderr)
+
+
 async def get_contributors_for_file(top_level_path: Path,
-                              filepath: Path,
-                              weeks: Optional[int] = None) -> List[str]:
+                                    filepath: Path,
+                                    weeks: Optional[int] = None) -> List[str]:
     """
     given a file, use `git blame` to identify the committer for each line in
     the file.  Accumulate the distinct committers and return them
@@ -46,7 +79,12 @@ async def get_contributors_for_file(top_level_path: Path,
     # Step 4: Get the output from all lines
     try:
         ret = list()
-        for line in os.popen(command).readlines():
+        completed_process = await asyncio_popen(command,
+                                                shell=True,
+                                                universal_newlines=True,
+                                                stdout=subprocess.PIPE)
+
+        for line in completed_process.stdout.splitlines():
             line = line.strip()
             if porcelain_info := git_line_porcelain_action_re.search(line):
                 if porcelain_info.group('action') == 'committer':
@@ -95,8 +133,8 @@ def get_git_toplevel(dirpath: Path) -> Path:
 
 
 async def all_files_by_extension(top_level_path: Path,
-                           extensions: Set[str],
-                           exclude_dirs: Optional[Set[str]] = None) -> Generator[Path, None, None]:
+                                 extensions: Set[str],
+                                 exclude_dirs: Optional[Set[str]] = None) -> Generator[Path, None, None]:
     """
     :param dirpath: The base directory for a git repository `git rev-parse --show-toplevel`
     :param extensions: the files that have these extensions will be included.
@@ -137,8 +175,10 @@ async def main():
     # Step 2: For each file, run the git blame and get the authors of each line 
     # Step 3: Aggregate the results of the git blame into a hashmap
     result_set_corlist = [get_contributors_for_file(top_level_path=dirpath, filepath=f, weeks=weeks)
-                       async for f in
-                       all_files_by_extension(dirpath, extensions)]
+                          async for f in
+                          all_files_by_extension(dirpath, extensions)]
+
+    #Run all the files in parallel and finish when they have all completed.
     file_info_result_list = await asyncio.gather(*result_set_corlist, return_exceptions=False)
     for l in file_info_result_list:
         contributors_hmap = contributors_hmap + Counter(l)
@@ -152,5 +192,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main(), debug=True)
-
-

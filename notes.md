@@ -34,4 +34,19 @@ defaultdict(<class 'int'>,
              'nhmall': 133})
 ```
 
+Async version
+```text
+Results obtained in:3.9284491539001465 seconds
+Contributor total lines: 383393
+Counter({'Pasi Kallinen': 352400,
+         'PatR': 14823,
+         'nhmall': 14623,
+         'nhkeni': 1084,
+         'Patric Mueller': 198,
+         'SHIRAKATA Kentaro': 188,
+         'copperwater': 35,
+         'Michael Meyer': 25,
+         'Alex Smith': 14,
+         'GitHub': 3})
 
+```
